@@ -1,0 +1,28 @@
+version: '2'
+
+services:
+  mosquitto:
+    build: .
+    container_name: mosquitto_server
+    ports:
+      - "1883:1883"
+      - "9883:9883"
+    volumes:
+      - "./docker/mq/etc:/etc/mosquitto.d/"
+      - "./docker/mq/var:/var/lib/mosquitto/"
+    environment:
+      - DOMAIN=example.local
+      - PORT=8080
+    restart: always
+  db:
+    image: postgres
+    container_name: mosquitto_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - "./docker/db/pgdata:/var/lib/postgresql/data"
+    environment:
+      POSTGRES_PASSWORD: '123456A!'
+      POSTGRES_USER: 'mqtt'
+      POSTGRES_DB: 'mqtt'
+    restart: always
