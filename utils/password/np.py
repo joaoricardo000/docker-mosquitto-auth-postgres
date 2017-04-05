@@ -1,4 +1,7 @@
 #!/usr/bin/env python
+"""
+Original from: https://github.com/jpmens/mosquitto-auth-plug/tree/master/contrib/python
+"""
 
 import sys
 from getpass import getpass
