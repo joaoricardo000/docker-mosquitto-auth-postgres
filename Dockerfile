@@ -30,7 +30,7 @@ RUN git clone https://github.com/jpmens/mosquitto-auth-plug.git && \
     make && \
     mv auth-plug.so /etc/mosquitto/auth-plug.so
 
-RUN echo echo /usr/local/lib > /etc/ld.so.conf.d/local.conf && /sbin/ldconfig
+RUN echo /usr/local/lib > /etc/ld.so.conf.d/local.conf && /sbin/ldconfig
 
 ADD mosquitto.conf /etc/mosquitto/mosquitto.conf
 CMD ["/usr/local/sbin/mosquitto", "-c", "/etc/mosquitto/mosquitto.conf"]
