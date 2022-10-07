@@ -37,7 +37,7 @@ CREATE UNIQUE INDEX acls_user_topic ON acls (username, topic);
 ## Adding new users and permissions
 
 First create a hashed password with  
-``` $ python utils/password/np.py```  
+``` $ docker exec -it mosquitto_server /usr/bin/np ```  
 
 Get the value and update the tables:  
 

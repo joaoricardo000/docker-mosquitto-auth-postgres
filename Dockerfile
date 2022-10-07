@@ -1,36 +1,129 @@
-FROM ubuntu:16.04
+FROM alpine:3.16
 
+LABEL maintainer="Roger Light <roger@atchoo.org>" \
+    description="Eclipse Mosquitto MQTT Broker"
+
+ENV VERSION=2.0.15 \
+    DOWNLOAD_SHA256=4735b1d32e3f91c7a8896741d88a3022e89730a1ee897946decfa0df27039ac6 \
+    GPG_KEYS=A0D6EEA1DCAE49A635A3B2F0779B22DFB3E717B7 \
+    LWS_VERSION=4.2.1 \
+    LWS_SHA256=842da21f73ccba2be59e680de10a8cce7928313048750eb6ad73b6fa50763c51
+
+RUN set -x && \
+    apk --no-cache add --virtual build-deps \
+        build-base \
+        cmake \
+        cjson-dev \
+        gnupg \
+        linux-headers \
+        openssl-dev \
+        util-linux-dev && \
+    wget https://github.com/warmcat/libwebsockets/archive/v${LWS_VERSION}.tar.gz -O /tmp/lws.tar.gz && \
+    echo "$LWS_SHA256  /tmp/lws.tar.gz" | sha256sum -c - && \
+    mkdir -p /build/lws && \
+    tar --strip=1 -xf /tmp/lws.tar.gz -C /build/lws && \
+    rm /tmp/lws.tar.gz && \
+    cd /build/lws && \
+    cmake . \
+        -DCMAKE_BUILD_TYPE=MinSizeRel \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DDISABLE_WERROR=ON \
+        -DLWS_IPV6=ON \
+        -DLWS_WITHOUT_BUILTIN_GETIFADDRS=ON \
+        -DLWS_WITHOUT_CLIENT=ON \
+        -DLWS_WITHOUT_EXTENSIONS=ON \
+        -DLWS_WITHOUT_TESTAPPS=ON \
+        -DLWS_WITH_EXTERNAL_POLL=ON \
+        -DLWS_WITH_HTTP2=OFF \
+        -DLWS_WITH_SHARED=OFF \
+        -DLWS_WITH_ZIP_FOPS=OFF \
+        -DLWS_WITH_ZLIB=OFF && \
+    make -j "$(nproc)" && \
+    rm -rf /root/.cmake && \
+    wget https://mosquitto.org/files/source/mosquitto-${VERSION}.tar.gz -O /tmp/mosq.tar.gz && \
+    echo "$DOWNLOAD_SHA256  /tmp/mosq.tar.gz" | sha256sum -c - && \
+    wget https://mosquitto.org/files/source/mosquitto-${VERSION}.tar.gz.asc -O /tmp/mosq.tar.gz.asc && \
+    export GNUPGHOME="$(mktemp -d)" && \
+    found=''; \
+    for server in \
+        hkps://keys.openpgp.org \
+        hkp://keyserver.ubuntu.com:80 \
+        pgp.mit.edu \
+    ; do \
+        echo "Fetching GPG key $GPG_KEYS from $server"; \
+        gpg --keyserver "$server" --keyserver-options timeout=10 --recv-keys "$GPG_KEYS" && found=yes && break; \
+    done; \
+    test -z "$found" && echo >&2 "error: failed to fetch GPG key $GPG_KEYS" && exit 1; \
+    gpg --batch --verify /tmp/mosq.tar.gz.asc /tmp/mosq.tar.gz && \
+    gpgconf --kill all && \
+    rm -rf "$GNUPGHOME" /tmp/mosq.tar.gz.asc && \
+    mkdir -p /build/mosq && \
+    tar --strip=1 -xf /tmp/mosq.tar.gz -C /build/mosq && \
+    rm /tmp/mosq.tar.gz && \
+    make -C /build/mosq -j "$(nproc)" \
+        CFLAGS="-Wall -O2 -I/build/lws/include -I/build" \
+        LDFLAGS="-L/build/lws/lib" \
+        WITH_ADNS=no \
+        WITH_DOCS=no \
+        WITH_SHARED_LIBRARIES=yes \
+        WITH_SRV=no \
+        WITH_STRIP=yes \
+        WITH_WEBSOCKETS=yes \
+        prefix=/usr \
+        binary && \
+    addgroup -S -g 1883 mosquitto 2>/dev/null && \
+    adduser -S -u 1883 -D -H -h /var/empty -s /sbin/nologin -G mosquitto -g mosquitto mosquitto 2>/dev/null && \
+    mkdir -p /mosquitto/config /mosquitto/data /mosquitto/log && \
+    install -d /usr/sbin/ && \
+    install -s -m755 /build/mosq/client/mosquitto_pub /usr/bin/mosquitto_pub && \
+    install -s -m755 /build/mosq/client/mosquitto_rr /usr/bin/mosquitto_rr && \
+    install -s -m755 /build/mosq/client/mosquitto_sub /usr/bin/mosquitto_sub && \
+    install -s -m644 /build/mosq/lib/libmosquitto.so.1 /usr/lib/libmosquitto.so.1 && \
+    install -s -m755 /build/mosq/src/mosquitto /usr/sbin/mosquitto && \
+    install -s -m755 /build/mosq/apps/mosquitto_ctrl/mosquitto_ctrl /usr/bin/mosquitto_ctrl && \
+    install -s -m755 /build/mosq/apps/mosquitto_passwd/mosquitto_passwd /usr/bin/mosquitto_passwd && \
+    install -s -m755 /build/mosq/plugins/dynamic-security/mosquitto_dynamic_security.so /usr/lib/mosquitto_dynamic_security.so && \
+    install -m644 /build/mosq/mosquitto.conf /mosquitto/config/mosquitto.conf && \
+    install -Dm644 /build/lws/LICENSE /usr/share/licenses/libwebsockets/LICENSE && \
+    install -Dm644 /build/mosq/epl-v20 /usr/share/licenses/mosquitto/epl-v20 && \
+    install -Dm644 /build/mosq/edl-v10 /usr/share/licenses/mosquitto/edl-v10 && \
+    chown -R mosquitto:mosquitto /mosquitto
+
+# Install mosquitto-auth-plugin
+RUN set -x && \
+    ln -sf /usr/lib/libmosquitto.so.1 /usr/lib/libmosquitto.so && \
+    apk --no-cache add \
+        git \
+        postgresql-dev && \
+    cd /build/mosq/ && \
+    git clone https://github.com/vankxr/mosquitto-auth-plug && \
+    cp /build/mosq/mosquitto-auth-plug/config.mk.in /build/mosq/mosquitto-auth-plug/config.mk && \
+    sed -i "s/BACKEND_CDB ?= no/BACKEND_CDB ?= no/" /build/mosq/mosquitto-auth-plug/config.mk && \
+    sed -i "s/BACKEND_MYSQL ?= yes/BACKEND_MYSQL ?= no/" /build/mosq/mosquitto-auth-plug/config.mk && \
+    sed -i "s/BACKEND_SQLITE ?= no/BACKEND_SQLITE ?= no/" /build/mosq/mosquitto-auth-plug/config.mk && \
+    sed -i "s/BACKEND_REDIS ?= no/BACKEND_REDIS ?= no/" /build/mosq/mosquitto-auth-plug/config.mk && \
+    sed -i "s/BACKEND_POSTGRES ?= no/BACKEND_POSTGRES ?= yes/" /build/mosq/mosquitto-auth-plug/config.mk && \
+    sed -i "s/BACKEND_LDAP ?= no/BACKEND_LDAP ?= no/" /build/mosq/mosquitto-auth-plug/config.mk && \
+    sed -i "s/BACKEND_HTTP ?= no/BACKEND_HTTP ?= no/" /build/mosq/mosquitto-auth-plug/config.mk && \
+    sed -i "s/BACKEND_JWT ?= no/BACKEND_JWT ?= no/" /build/mosq/mosquitto-auth-plug/config.mk && \
+    sed -i "s/BACKEND_MONGO ?= no/BACKEND_MONGO ?= no/" /build/mosq/mosquitto-auth-plug/config.mk && \
+    sed -i "s/BACKEND_FILES ?= no/BACKEND_FILES ?= no/" /build/mosq/mosquitto-auth-plug/config.mk && \
+    sed -i "s/BACKEND_MEMCACHED ?= no/BACKEND_MEMCACHED ?= no/" /build/mosq/mosquitto-auth-plug/config.mk && \
+    sed -i "s/MOSQUITTO_SRC =/MOSQUITTO_SRC = ..\//" /build/mosq/mosquitto-auth-plug/config.mk && \
+    make -C /build/mosq/mosquitto-auth-plug -j "$(nproc)" CFG_CFLAGS=-I/build/mosq/include && \
+    install -s -m755 /build/mosq/mosquitto-auth-plug/auth-plug.so /usr/lib/ && \
+    install -s -m755 /build/mosq/mosquitto-auth-plug/np /usr/bin/
+
+RUN apk --no-cache add \
+        ca-certificates \
+        cjson && \
+    apk del build-deps git && \
+    rm -rf /build
+
+VOLUME ["/mosquitto/data", "/mosquitto/log"]
+
+# Set up the entry point script and default command
+COPY docker-entrypoint.sh mosquitto-no-auth.conf /
 EXPOSE 1883
-EXPOSE 9883
-
-RUN mkdir -p /etc/mosquitto.d/
-RUN mkdir -p /var/lib/mosquitto/
-
-RUN apt-get update && apt-get -y upgrade
-RUN apt-get install -y libc-ares-dev libcurl4-openssl-dev uuid-dev postgresql libpq-dev git wget tar build-essential vim
-
-ENV PATH=/usr/local/bin:/usr/local/sbin:$PATH
-ENV MOSQUITTO_VERSION=v1.4.10
-
-# install mosquitto
-RUN wget http://mosquitto.org/files/source/mosquitto-1.4.1.tar.gz && \
-    tar xvzf mosquitto-1.4.1.tar.gz
-WORKDIR mosquitto-1.4.1
-RUN sed -i "s/WITH_SRV:=yes/WITH_SRV=no/" config.mk
-RUN make mosquitto && \
-    make install
-
-# install mosquitto-auth-plug
-RUN git clone https://github.com/jpmens/mosquitto-auth-plug.git && \
-    cd mosquitto-auth-plug && \
-    cp config.mk.in config.mk && \
-    sed -i "s/BACKEND_MYSQL ?= yes/BACKEND_MYSQL ?= no/" config.mk && \
-    sed -i "s/BACKEND_POSTGRES ?= no/BACKEND_POSTGRES ?= yes/" config.mk && \
-    sed -i "s/MOSQUITTO_SRC =/MOSQUITTO_SRC = ..\//" config.mk && \
-    make && \
-    mv auth-plug.so /etc/mosquitto/auth-plug.so
-
-RUN echo /usr/local/lib > /etc/ld.so.conf.d/local.conf && /sbin/ldconfig
-
-ADD mosquitto.conf /etc/mosquitto/mosquitto.conf
-CMD ["/usr/local/sbin/mosquitto", "-c", "/etc/mosquitto/mosquitto.conf"]
+ENTRYPOINT ["/docker-entrypoint.sh"]
+CMD ["/usr/sbin/mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
